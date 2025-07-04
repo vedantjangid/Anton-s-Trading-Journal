@@ -47,7 +47,7 @@ export interface Database {
           account_id: string
           date: string
           symbol: string
-          type: "buy" | "sell"
+          type: "buy" | "sell" | "withdrawal" | "deposit"
           lot_size: number
           entry_price: number
           exit_price: number | null
@@ -71,7 +71,7 @@ export interface Database {
           account_id: string
           date: string
           symbol: string
-          type: "buy" | "sell"
+          type: "buy" | "sell" | "withdrawal" | "deposit"
           lot_size?: number
           entry_price: number
           exit_price?: number | null
@@ -95,7 +95,7 @@ export interface Database {
           account_id?: string
           date?: string
           symbol?: string
-          type?: "buy" | "sell"
+          type?: "buy" | "sell" | "withdrawal" | "deposit"
           lot_size?: number
           entry_price?: number
           exit_price?: number | null

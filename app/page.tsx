@@ -44,6 +44,7 @@ interface Account {
   currentBalance: number
   currency: string
   createdAt: string
+  totalDeposits?: number
 }
 
 interface Trade {
@@ -51,7 +52,7 @@ interface Trade {
   accountId: string
   date: string
   symbol: string
-  type: "buy" | "sell"
+  type: "buy" | "sell" | "withdrawal" | "deposit"
   lotSize: number
   entryPrice: number
   exitPrice?: number
@@ -72,12 +73,11 @@ interface Trade {
 
 interface Filters {
   account: string
-  status: string
+  statusResult: string
   emotion: string
   tag: string
   dateFrom: string
   dateTo: string
-  winLoss: string
 }
 
 const JOURNAL_ID = process.env.NEXT_PUBLIC_JOURNAL_ID
@@ -99,16 +99,17 @@ export default function TradingJournal() {
   const [darkMode, setDarkMode] = useState(false)
   const [filters, setFilters] = useState<Filters>({
     account: "all",
-    status: "all",
+    statusResult: "all",
     emotion: "all",
     tag: "all",
     dateFrom: "",
     dateTo: "",
-    winLoss: "all",
   })
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [newAccount, setNewAccount] = useState({ name: "", initialBalance: 0, currency: "USD" })
   const [currentTag, setCurrentTag] = useState("")
+  const [addFundsInputs, setAddFundsInputs] = useState<{ [accountId: string]: string }>({})
+  const [tradeTypeFilter, setTradeTypeFilter] = useState<'all' | 'buy' | 'sell' | 'deposit' | 'withdrawal'>('all')
 
   // Load data on component mount
   useEffect(() => {
@@ -129,6 +130,7 @@ export default function TradingJournal() {
         currentBalance: acc.current_balance ?? acc.currentBalance ?? 0,
         currency: acc.currency,
         createdAt: acc.created_at ?? acc.createdAt ?? "",
+        totalDeposits: acc.total_deposits ?? acc.totalDeposits,
       }))
 
       const mappedTrades = trades.map((trade: any) => ({
@@ -177,6 +179,7 @@ export default function TradingJournal() {
         currency: acc.currency,
         created_at: acc.createdAt,
         updated_at: new Date().toISOString(),
+        total_deposits: acc.totalDeposits,
       }))
       StorageService.saveAccounts(dbAccounts)
     }
@@ -248,6 +251,7 @@ export default function TradingJournal() {
       currentBalance: newAccount.initialBalance,
       currency: newAccount.currency,
       createdAt: new Date().toISOString(),
+      totalDeposits: newAccount.initialBalance,
     }
 
     setAccounts([...accounts, account])
@@ -281,6 +285,7 @@ export default function TradingJournal() {
           currentBalance: acc.current_balance ?? acc.currentBalance ?? 0,
           currency: acc.currency,
           createdAt: acc.created_at ?? acc.createdAt ?? "",
+          totalDeposits: acc.total_deposits ?? acc.totalDeposits,
         }))
         const updatedTrades = updatedTradesRaw.map((trade: any) => ({
           id: trade.id,
@@ -360,7 +365,7 @@ export default function TradingJournal() {
         return `${year}-${month}-${day}`;
       })(),
       symbol: currentTrade.symbol || "",
-      type: currentTrade.type as "buy" | "sell",
+      type: currentTrade.type as "buy" | "sell" | "withdrawal" | "deposit",
       lotSize: currentTrade.lotSize || 0,
       entryPrice: currentTrade.entryPrice || 0,
       exitPrice: currentTrade.exitPrice,
@@ -420,11 +425,20 @@ export default function TradingJournal() {
   }
 
   const filteredTrades = trades.filter((trade) => {
+    const isRealTrade = trade.type === "buy" || trade.type === "sell"
+    let statusResultMatch = true
+    if (filters.statusResult === "open" || filters.statusResult === "closed" || filters.statusResult === "stopped") {
+      statusResultMatch = trade.status === filters.statusResult
+    } else if (filters.statusResult === "win") {
+      statusResultMatch = isRealTrade && trade.status === "closed" && (trade.pnl ?? 0) > 0
+    } else if (filters.statusResult === "loss") {
+      statusResultMatch = isRealTrade && trade.status === "closed" && (trade.pnl ?? 0) < 0
+    }
     return (
-      (filters.status === "all" || trade.status === filters.status) &&
+      statusResultMatch &&
       (filters.emotion === "all" || trade.emotion === filters.emotion) &&
-      (filters.tag === "all" || trade.tags.includes(filters.tag)) &&
-      (filters.winLoss === "all" || (filters.winLoss === "win" ? (trade.pnl ?? 0) > 0 : (trade.pnl ?? 0) < 0))
+      (filters.tag === "all" || (isRealTrade && trade.tags.includes(filters.tag))) &&
+      (tradeTypeFilter === 'all' || trade.type === tradeTypeFilter)
     )
   })
 
@@ -465,17 +479,37 @@ export default function TradingJournal() {
 
   const selectedAccountData = accounts.find((acc) => acc.id === selectedAccount)
   const accountTrades = trades.filter((t) => t.accountId === selectedAccount)
-  const totalPnL = accountTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0)
-  const winningTrades = accountTrades.filter((trade) => (trade.pnl ?? 0) > 0).length
-  const losingTrades = accountTrades.filter((trade) => (trade.pnl ?? 0) < 0).length
-  const winRate = accountTrades.length > 0 ? ((winningTrades / accountTrades.length) * 100).toFixed(1) : 0
-  const { currentStreak, streakType } = getStreaks()
+  const realTrades = accountTrades.filter((t) => t.type === "buy" || t.type === "sell")
+  const totalPnL = realTrades.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0)
+  const winningTrades = realTrades.filter((trade) => (trade.pnl ?? 0) > 0).length
+  const losingTrades = realTrades.filter((trade) => (trade.pnl ?? 0) < 0).length
+  const winRate = realTrades.length > 0 ? ((winningTrades / realTrades.length) * 100).toFixed(1) : 0
+  const bestTrade = realTrades.length > 0 ? Math.max(...realTrades.map((t) => t.pnl ?? 0)) : 0
+  const worstTrade = realTrades.length > 0 ? Math.min(...realTrades.map((t) => t.pnl ?? 0)) : 0
+  const { currentStreak, streakType } = (() => {
+    const sortedTrades = [...realTrades]
+      .filter((t) => t.status === "closed" && (t.pnl ?? 0) !== undefined)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    let currentStreak = 0
+    let streakType = ""
+    for (const trade of sortedTrades) {
+      const isWin = (trade.pnl ?? 0) > 0
+      if (currentStreak === 0) {
+        currentStreak = 1
+        streakType = isWin ? "win" : "loss"
+      } else if ((streakType === "win" && isWin) || (streakType === "loss" && !isWin)) {
+        currentStreak++
+      } else {
+        break
+      }
+    }
+    return { currentStreak, streakType }
+  })()
   const avgRMultiple =
-    accountTrades.filter((t) => t.rMultiple !== undefined).reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) /
-      accountTrades.filter((t) => t.rMultiple !== undefined).length || 0
-
-  const allTags = Array.from(new Set(trades.flatMap((t) => t.tags)))
-  const allEmotions = Array.from(new Set(trades.map((t) => t.emotion).filter(Boolean)))
+    realTrades.filter((t) => t.rMultiple !== undefined).reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) /
+      realTrades.filter((t) => t.rMultiple !== undefined).length || 0
+  const allTags = Array.from(new Set(trades.filter((t) => t.type === "buy" || t.type === "sell").flatMap((t) => t.tags)))
+  const allEmotions = Array.from(new Set(realTrades.map((t) => t.emotion).filter(Boolean)))
 
   // After all hooks
   useEffect(() => {
@@ -532,6 +566,120 @@ export default function TradingJournal() {
       </div>
     )
   }
+
+  const handleAddFunds = (accountId: string) => {
+    const amount = parseFloat(addFundsInputs[accountId] || "0")
+    if (isNaN(amount) || amount <= 0) {
+      toast({
+        title: "Invalid Amount",
+        description: "Please enter a valid amount greater than 0.",
+        variant: "destructive",
+      })
+      return
+    }
+    setAccounts((prev) =>
+      prev.map((acc) => {
+        if (acc.id === accountId) {
+          const newDeposits = (acc.totalDeposits ?? acc.initialBalance) + amount
+          return {
+            ...acc,
+            currentBalance: acc.currentBalance + amount,
+            totalDeposits: newDeposits,
+          }
+        }
+        return acc
+      })
+    )
+    // Create a deposit trade
+    const depositTrade: Trade = {
+      id: Date.now().toString() + "-deposit",
+      accountId: accountId,
+      date: new Date().toISOString().split("T")[0],
+      symbol: "Deposit",
+      type: "deposit",
+      lotSize: 0,
+      entryPrice: 0,
+      exitPrice: 0,
+      stopLoss: undefined,
+      takeProfit: undefined,
+      pnl: amount,
+      status: "closed",
+      emotion: "",
+      mistakes: "",
+      lessons: "",
+      notes: "",
+      tags: ["deposit"],
+      riskAmount: undefined,
+      rMultiple: undefined,
+      screenshot: undefined,
+      screenshotUrl: undefined,
+    }
+    setTrades((prev) => [...prev, depositTrade])
+    setAddFundsInputs((prev) => ({ ...prev, [accountId]: "" }))
+    toast({
+      title: "Funds Added",
+      description: `Added ${amount} to account successfully!`,
+    })
+  }
+
+  const handleWithdraw = (accountId: string) => {
+    const amount = parseFloat(addFundsInputs[accountId] || "0")
+    const account = accounts.find(acc => acc.id === accountId)
+    if (!account) return
+    if (isNaN(amount) || amount <= 0) {
+      toast({
+        title: "Invalid Amount",
+        description: "Please enter a valid amount greater than 0.",
+        variant: "destructive",
+      })
+      return
+    }
+    if (amount > account.currentBalance) {
+      toast({
+        title: "Insufficient Balance",
+        description: "You cannot withdraw more than the current balance.",
+        variant: "destructive",
+      })
+      return
+    }
+    // Create a withdrawal trade
+    const withdrawalTrade: Trade = {
+      id: Date.now().toString() + "-withdrawal",
+      accountId: accountId,
+      date: new Date().toISOString().split("T")[0],
+      symbol: "Withdrawal",
+      type: "withdrawal",
+      lotSize: 0,
+      entryPrice: 0,
+      exitPrice: 0,
+      stopLoss: undefined,
+      takeProfit: undefined,
+      pnl: -amount,
+      status: "closed",
+      emotion: "",
+      mistakes: "",
+      lessons: "",
+      notes: "",
+      tags: ["withdrawal"],
+      riskAmount: undefined,
+      rMultiple: undefined,
+      screenshot: undefined,
+      screenshotUrl: undefined,
+    }
+    setTrades(prev => [...prev, withdrawalTrade])
+    setAccounts(prev => prev.map(acc => acc.id === accountId ? { ...acc, currentBalance: acc.currentBalance - amount } : acc))
+    setAddFundsInputs(prev => ({ ...prev, [accountId]: "" }))
+    toast({
+      title: "Withdrawal Successful",
+      description: `Withdrew ${amount} from account successfully!`,
+    })
+  }
+
+  const inputNoSpinnerStyle: React.CSSProperties = {
+    MozAppearance: 'textfield',
+    WebkitAppearance: 'none',
+    appearance: 'none',
+  };
 
   return (
     <div className={`min-h-screen transition-colors duration-200 ${darkMode ? "bg-gray-900" : "bg-white"}`}>
@@ -651,8 +799,9 @@ export default function TradingJournal() {
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {accounts.map((account) => {
                           const accountTrades = trades.filter((t) => t.accountId === account.id)
-                          const accountPnL = accountTrades.reduce((sum, t) => sum + (t.pnl ?? 0), 0)
-                          const roi = ((accountPnL / account.initialBalance) * 100).toFixed(2)
+                          const realAccountTrades = accountTrades.filter((t) => t.type === "buy" || t.type === "sell")
+                          const accountPnL = realAccountTrades.reduce((sum, t) => sum + (t.pnl ?? 0), 0)
+                          const roi = ((realAccountTrades.length > 0 ? (accountPnL / (account.totalDeposits ?? account.initialBalance)) * 100 : 0)).toFixed(2)
 
                           return (
                             <Card
@@ -702,7 +851,34 @@ export default function TradingJournal() {
                                   </div>
                                   <div className="flex justify-between">
                                     <span className="text-sm text-muted-foreground">Trades:</span>
-                                    <span>{accountTrades.length}</span>
+                                    <span>{realAccountTrades.length}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-sm text-muted-foreground">Deposits:</span>
+                                    <span className="font-medium">
+                                      {account.currency} {(account.totalDeposits ?? account.initialBalance).toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2">
+                                    <div className="flex flex-col md:flex-row gap-2 max-w-xs w-full">
+                                      <Input
+                                        type="text"
+                                        inputMode="decimal"
+                                        pattern="^[0-9]*[.,]?[0-9]*$"
+                                        placeholder="Enter amount"
+                                        value={addFundsInputs[account.id] || ""}
+                                        onChange={e => setAddFundsInputs({ ...addFundsInputs, [account.id]: e.target.value })}
+                                        className="w-full md:w-32 text-base"
+                                        style={inputNoSpinnerStyle}
+                                        autoComplete="off"
+                                      />
+                                      <Button size="sm" variant="default" className="w-full md:w-auto" onClick={() => handleAddFunds(account.id)}>
+                                        Dep
+                                      </Button>
+                                      <Button size="sm" variant="destructive" className="w-full md:w-auto" onClick={() => handleWithdraw(account.id)}>
+                                        Wit
+                                      </Button>
+                                    </div>
                                   </div>
                                 </div>
                                 <Button
@@ -768,7 +944,7 @@ export default function TradingJournal() {
                           <Select
                             value={currentTrade.type}
                             onValueChange={(value) =>
-                              setCurrentTrade({ ...currentTrade, type: value as "buy" | "sell" })
+                              setCurrentTrade({ ...currentTrade, type: value as "buy" | "sell" | "withdrawal" | "deposit" })
                             }
                           >
                             <SelectTrigger>
@@ -1091,11 +1267,8 @@ export default function TradingJournal() {
                       {/* Filters */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 p-4 border rounded-lg">
                         <div>
-                          <Label>Status</Label>
-                          <Select
-                            value={filters.status}
-                            onValueChange={(value) => setFilters({ ...filters, status: value })}
-                          >
+                          <Label>Status/Result</Label>
+                          <Select value={filters.statusResult} onValueChange={value => setFilters({ ...filters, statusResult: value })}>
                             <SelectTrigger>
                               <SelectValue placeholder="All" />
                             </SelectTrigger>
@@ -1104,6 +1277,8 @@ export default function TradingJournal() {
                               <SelectItem value="open">Open</SelectItem>
                               <SelectItem value="closed">Closed</SelectItem>
                               <SelectItem value="stopped">Stopped</SelectItem>
+                              <SelectItem value="win">Win</SelectItem>
+                              <SelectItem value="loss">Loss</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -1143,18 +1318,17 @@ export default function TradingJournal() {
                           </Select>
                         </div>
                         <div>
-                          <Label>Win/Loss</Label>
-                          <Select
-                            value={filters.winLoss}
-                            onValueChange={(value) => setFilters({ ...filters, winLoss: value })}
-                          >
+                          <Label>Type</Label>
+                          <Select value={tradeTypeFilter} onValueChange={(value: string) => setTradeTypeFilter(value as 'all' | 'buy' | 'sell' | 'deposit' | 'withdrawal')}>
                             <SelectTrigger>
                               <SelectValue placeholder="All" />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="all">All</SelectItem>
-                              <SelectItem value="win">Wins Only</SelectItem>
-                              <SelectItem value="loss">Losses Only</SelectItem>
+                              <SelectItem value="buy">Buy</SelectItem>
+                              <SelectItem value="sell">Sell</SelectItem>
+                              <SelectItem value="deposit">Deposit</SelectItem>
+                              <SelectItem value="withdrawal">Withdrawal</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -1170,16 +1344,11 @@ export default function TradingJournal() {
                             <Card key={trade.id} className="p-4">
                               <div className="flex justify-between items-start mb-3">
                                 <div className="flex items-center gap-3">
-                                  <Badge variant={trade.type === "buy" ? "default" : "secondary"}>
-                                    {trade.type.toUpperCase()}
+                                  <Badge variant={trade.type === "buy" ? "default" : trade.type === "sell" ? "secondary" : trade.type === "deposit" ? "secondary" : "destructive"}>
+                                    {trade.type === "deposit" ? "DEPOSIT" : trade.type === "withdrawal" ? "WITHDRAWAL" : trade.type.toUpperCase()}
                                   </Badge>
                                   <h3 className="font-semibold">{trade.symbol}</h3>
                                   <span className="text-sm text-muted-foreground">{trade.date}</span>
-                                  {trade.rMultiple && (
-                                    <Badge variant={trade.rMultiple > 0 ? "default" : "destructive"}>
-                                      {trade.rMultiple.toFixed(2)}R
-                                    </Badge>
-                                  )}
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <div
@@ -1329,7 +1498,7 @@ export default function TradingJournal() {
                             <div className="flex justify-between">
                               <span>ROI:</span>
                               <span className={`font-bold ${totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
-                                {((totalPnL / (selectedAccountData?.initialBalance || 1)) * 100).toFixed(2)}%
+                                {((totalPnL / ((selectedAccountData?.totalDeposits ?? selectedAccountData?.initialBalance) || 1)) * 100).toFixed(2)}%
                               </span>
                             </div>
                           </div>
@@ -1351,15 +1520,13 @@ export default function TradingJournal() {
                             <div className="flex justify-between">
                               <span>Best Trade:</span>
                               <span className="text-green-600 font-medium">
-                                {selectedAccountData?.currency}{" "}
-                                {Math.max(...accountTrades.map((t) => t.pnl ?? 0)).toFixed(2)}
+                                {selectedAccountData?.currency} {bestTrade.toFixed(2)}
                               </span>
                             </div>
                             <div className="flex justify-between">
                               <span>Worst Trade:</span>
                               <span className="text-red-600 font-medium">
-                                {selectedAccountData?.currency}{" "}
-                                {Math.min(...accountTrades.map((t) => t.pnl ?? 0)).toFixed(2)}
+                                {selectedAccountData?.currency} {worstTrade.toFixed(2)}
                               </span>
                             </div>
                           </div>

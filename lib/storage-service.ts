@@ -38,13 +38,8 @@ export class StorageService {
   static async saveAccounts(accounts: Account[]) {
     if (this.useSupabase) {
       try {
-        // Delete existing accounts and insert new ones
-        const { error: deleteError } = await supabase.from("accounts").delete().neq("id", "dummy") // Delete all
-
-        if (deleteError) throw deleteError
-
         if (accounts.length > 0) {
-          const { error: insertError } = await supabase.from("accounts").insert(
+          const { error: insertError } = await supabase.from("accounts").upsert(
             accounts.map((acc) => ({
               id: acc.id,
               name: acc.name,
@@ -53,10 +48,8 @@ export class StorageService {
               currency: acc.currency,
             })),
           )
-
           if (insertError) throw insertError
         }
-
         return { success: true }
       } catch (error) {
         console.error("Supabase save accounts error:", error)
@@ -148,13 +141,8 @@ export class StorageService {
   static async saveTrades(trades: Trade[]) {
     if (this.useSupabase) {
       try {
-        // Delete existing trades and insert new ones
-        const { error: deleteError } = await supabase.from("trades").delete().neq("id", "dummy") // Delete all
-
-        if (deleteError) throw deleteError
-
         if (trades.length > 0) {
-          const { error: insertError } = await supabase.from("trades").insert(
+          const { error: insertError } = await supabase.from("trades").upsert(
             trades.map((trade) => ({
               id: trade.id,
               account_id: trade.account_id,
@@ -178,10 +166,8 @@ export class StorageService {
               screenshot_url: trade.screenshot_url,
             })),
           )
-
           if (insertError) throw insertError
         }
-
         return { success: true }
       } catch (error) {
         console.error("Supabase save trades error:", error)
