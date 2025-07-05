@@ -425,11 +425,6 @@ export default function TradingJournal() {
   }
 
   const filteredTrades = trades.filter((trade) => {
-    // First filter by selected account
-    if (selectedAccount && trade.accountId !== selectedAccount) {
-      return false
-    }
-    
     const isRealTrade = trade.type === "buy" || trade.type === "sell"
     let statusResultMatch = true
     if (filters.statusResult === "open" || filters.statusResult === "closed" || filters.statusResult === "stopped") {
